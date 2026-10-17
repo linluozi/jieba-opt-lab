@@ -1,0 +1,318 @@
+diff --git a/jieba/__init__.py b/jieba/__init__.py
+index 90f0bcd..094d2dc 100644
+--- a/jieba/__init__.py
++++ b/jieba/__init__.py
+@@ -45,6 +45,10 @@ re_han_default = re.compile("([\u4E00-\u9FD5a-zA-Z0-9+#&\._%\-]+)", re.U)
+ 
+ re_skip_default = re.compile("(\r\n|\s)", re.U)
+ 
++# Sentinel for "no candidate yet" in the route recurrence. Any real route value
++# is a sum of logs of positive frequencies, so it is far above this.
++_NEG_INF = -1e308
++
+ 
+ def setLogLevel(log_level):
+     default_logger.setLevel(log_level)
+@@ -177,6 +181,73 @@ class Tokenizer(object):
+             route[idx] = max((log(self.FREQ.get(sentence[idx:x + 1]) or 1) -
+                               logtotal + route[x + 1][0], x) for x in DAG[idx])
+ 
++    def _route(self, sentence):
++        """Single-pass max-probability route (optimization, see PATCH.md).
++
++        Replaces the get_DAG() + calc() pair used by the accurate-mode cutters
++        with one backward scan. The original does the same substring work twice:
++        get_DAG() tests ``frag in FREQ`` to discover edges, then calc() slices
++        the same spans again and looks the frequency up a second time. Here the
++        frequency is read once while scanning, and the Viterbi recurrence is
++        applied immediately, so no per-position edge list is materialised.
++
++        Returns (values, ends) as two flat lists:
++          values[idx] -- log P(best route from idx to end), values[N] == 0.0
++          ends[idx]   -- the inclusive end offset of the first word on that
++                         route, i.e. the original route[idx][1].
++
++        Equivalent to:
++            route = {}; calc(sentence, get_DAG(sentence), route)
++        for every input, including tie-breaking: the original compares
++        (value, end) tuples, so an exact tie picks the larger end offset.
++
++        The arithmetic is deliberately written in the original's order,
++        ``log(freq) - logtotal + values[i + 1]``. Regrouping it as
++        ``log(freq) + values[i + 1] - logtotal`` is algebraically identical but
++        not bit-identical in IEEE-754, and that difference is observable: for
++        inputs such as "期期期" two routes have mathematically equal scores, so
++        the rounding of the last bit decides which one wins the tie. Keeping
++        the original association reproduces the original segmentation exactly.
++        """
++        N = len(sentence)
++        # get_DAG() used to perform this check on the caller's behalf; without
++        # it, a first call to cut() would read self.total == 0 and log(0).
++        self.check_initialized()
++        FREQ = self.FREQ
++        logtotal = log(self.total)
++        get = FREQ.get
++
++        values = [0.0] * (N + 1)
++        ends = [0] * N
++
++        for idx in xrange(N - 1, -1, -1):
++            best = _NEG_INF
++            best_end = idx
++            found = False
++            i = idx
++            frag = sentence[idx]
++            while i < N:
++                freq = get(frag)
++                if freq is None:
++                    break
++                if freq:
++                    found = True
++                    # Same association as the original: (log - logtotal) + prev.
++                    value = log(freq) - logtotal + values[i + 1]
++                    if value >= best:
++                        best = value
++                        best_end = i
++                i += 1
++                frag = sentence[idx:i + 1]
++            if not found:
++                # No dictionary word starts here; the only edge is the single
++                # character with an implicit frequency of 1 (log == 0.0).
++                best = 0.0 - logtotal + values[idx + 1]
++            values[idx] = best
++            ends[idx] = best_end
++
++        return values, ends
++
+     def get_DAG(self, sentence):
+         self.check_initialized()
+         DAG = {}
+@@ -224,14 +295,12 @@ class Tokenizer(object):
+             yield eng_buf
+ 
+     def __cut_DAG_NO_HMM(self, sentence):
+-        DAG = self.get_DAG(sentence)
+-        route = {}
+-        self.calc(sentence, DAG, route)
++        route_values, route_ends = self._route(sentence)
+         x = 0
+         N = len(sentence)
+         buf = ''
+         while x < N:
+-            y = route[x][1] + 1
++            y = route_ends[x] + 1
+             l_word = sentence[x:y]
+             if re_eng.match(l_word) and len(l_word) == 1:
+                 buf += l_word
+@@ -247,14 +316,12 @@ class Tokenizer(object):
+             buf = ''
+ 
+     def __cut_DAG(self, sentence):
+-        DAG = self.get_DAG(sentence)
+-        route = {}
+-        self.calc(sentence, DAG, route)
++        route_values, route_ends = self._route(sentence)
+         x = 0
+         buf = ''
+         N = len(sentence)
+         while x < N:
+-            y = route[x][1] + 1
++            y = route_ends[x] + 1
+             l_word = sentence[x:y]
+             if y - x == 1:
+                 buf += l_word
+diff --git a/jieba/finalseg/__init__.py b/jieba/finalseg/__init__.py
+index d7600f7..9a17bdb 100644
+--- a/jieba/finalseg/__init__.py
++++ b/jieba/finalseg/__init__.py
+@@ -34,26 +34,171 @@ else:
+     from .prob_emit import P as emit_P
+ 
+ 
++# --- Pre-resolved constants for the unrolled BMES path (see _viterbi_bmes) ---
++# Resolved once at import time so the per-character loop does no dict lookups
++# for the transition matrix or the start probabilities.
++_BMES = ('B', 'M', 'E', 'S')
++_START_P = {s: start_P[s] for s in _BMES}
++_EMIT_B, _EMIT_M, _EMIT_E, _EMIT_S = emit_P['B'], emit_P['M'], emit_P['E'], emit_P['S']
++# _TR_<from><to>: log P(next tag = to | current tag = from)
++_TR_BM = trans_P['B']['M']
++_TR_BE = trans_P['B']['E']
++_TR_MM = trans_P['M']['M']
++_TR_ME = trans_P['M']['E']
++_TR_EB = trans_P['E']['B']
++_TR_ES = trans_P['E']['S']
++_TR_SB = trans_P['S']['B']
++_TR_SS = trans_P['S']['S']
++
++
+ def viterbi(obs, states, start_p, trans_p, emit_p):
+-    V = [{}]  # tabular
+-    path = {}
+-    for y in states:  # init
+-        V[0][y] = start_p[y] + emit_p[y].get(obs[0], MIN_FLOAT)
+-        path[y] = [y]
+-    for t in xrange(1, len(obs)):
+-        V.append({})
+-        newpath = {}
+-        for y in states:
+-            em_p = emit_p[y].get(obs[t], MIN_FLOAT)
+-            (prob, state) = max(
+-                [(V[t - 1][y0] + trans_p[y0].get(y, MIN_FLOAT) + em_p, y0) for y0 in PrevStatus[y]])
+-            V[t][y] = prob
+-            newpath[y] = path[state] + [y]
+-        path = newpath
+-
+-    (prob, state) = max((V[len(obs) - 1][y], y) for y in 'ES')
+-
+-    return (prob, path[state])
++    """Viterbi over the BMES tag chain (optimization, see PATCH.md).
++
++    The original kept a full tag *path* per state and copied it at every step
++    (``path[state] + [y]``). For a chain of length n that copies
++    n + (n-1) + ... + 1 = O(n^2) list elements in total, although only one
++    path is ever returned. Here each step stores just the chosen predecessor
++    of every state (a back-pointer) and the path is rebuilt once at the end:
++    O(n) memory, O(n) copying.
++
++    Results are identical, including tie-breaking. The original picks with
++    ``max((prob, y0) for y0 in PrevStatus[y])``, i.e. on an exact tie it keeps
++    the y0 whose *character* is larger ('S' > 'E', 'M' > 'B'). The comparison
++    below reproduces that rule explicitly instead of relying on tuple ordering.
++
++    ``states`` is always 'BMES' in this package, and callers are dominated by
++    2-4 character inputs, so that case takes a fully unrolled path with the
++    transition matrix pre-resolved to constants; the generic loop remains for
++    any other state set.
++    """
++    if states == 'BMES' and start_p is start_P and trans_p is trans_P and emit_p is emit_P:
++        return _viterbi_bmes(obs)
++    return _viterbi_generic(obs, states, start_p, trans_p, emit_p)
++
++
++def _viterbi_bmes(obs):
++    """Fully unrolled Viterbi for the built-in BMES model.
++
++    PrevStatus has exactly two predecessors per state, so the inner loop is
++    unrolled and the transition matrix is resolved once at import time. The
++    tie-break order (the larger state character wins) is spelled out in each
++    branch: B<-S,E  M<-M,B  E<-M,B  S<-S,E.
++    """
++    n = len(obs)
++    cur_b = _START_P['B'] + _EMIT_B.get(obs[0], MIN_FLOAT)
++    cur_m = _START_P['M'] + _EMIT_M.get(obs[0], MIN_FLOAT)
++    cur_e = _START_P['E'] + _EMIT_E.get(obs[0], MIN_FLOAT)
++    cur_s = _START_P['S'] + _EMIT_S.get(obs[0], MIN_FLOAT)
++
++    # back[t] packs the four chosen predecessors as a 4-tuple of small ints.
++    back = []
++
++    for t in xrange(1, n):
++        ch = obs[t]
++        e_b = _EMIT_B.get(ch, MIN_FLOAT)
++        e_m = _EMIT_M.get(ch, MIN_FLOAT)
++        e_e = _EMIT_E.get(ch, MIN_FLOAT)
++        e_s = _EMIT_S.get(ch, MIN_FLOAT)
++
++        # B <- {S, E}; on a tie 'S' (larger char) wins.
++        v = cur_s + _TR_SB + e_b
++        w = cur_e + _TR_EB + e_b
++        if v >= w:
++            n_b, p_b = v, 3
++        else:
++            n_b, p_b = w, 2
++
++        # M <- {M, B}; on a tie 'M' wins.
++        v = cur_m + _TR_MM + e_m
++        w = cur_b + _TR_BM + e_m
++        if v >= w:
++            n_m, p_m = v, 1
++        else:
++            n_m, p_m = w, 0
++
++        # E <- {B, M}; on a tie 'M' wins.
++        v = cur_b + _TR_BE + e_e
++        w = cur_m + _TR_ME + e_e
++        if v > w:
++            n_e, p_e = v, 0
++        else:
++            n_e, p_e = w, 1
++
++        # S <- {S, E}; on a tie 'S' wins.
++        v = cur_s + _TR_SS + e_s
++        w = cur_e + _TR_ES + e_s
++        if v >= w:
++            n_s, p_s = v, 3
++        else:
++            n_s, p_s = w, 2
++
++        back.append((p_b, p_m, p_e, p_s))
++        cur_b, cur_m, cur_e, cur_s = n_b, n_m, n_e, n_s
++
++    # max((prob, y) for y in 'ES'); on a tie 'S' wins.
++    if cur_e > cur_s:
++        prob, state = cur_e, 2
++    else:
++        prob, state = cur_s, 3
++
++    path = [0] * n
++    path[n - 1] = state
++    for t in xrange(n - 2, -1, -1):
++        state = back[t][state]
++        path[t] = state
++
++    return (prob, [_BMES[i] for i in path])
++
++
++def _viterbi_generic(obs, states, start_p, trans_p, emit_p):
++    """Generic Viterbi: same results, any state set."""
++    n = len(obs)
++    order = list(states)
++    index = {s: i for i, s in enumerate(order)}
++    # Pre-resolve PrevStatus into index lists, keeping the original iteration
++    # order so that tie-breaking stays identical.
++    preds = [[index[s] for s in PrevStatus[y]] for y in order]
++    # trans[i][j] == trans_p[order[i]].get(order[j], MIN_FLOAT)
++    trans = [[trans_p[a].get(b, MIN_FLOAT) for b in order] for a in order]
++
++    cur = [start_p[y] + emit_p[y].get(obs[0], MIN_FLOAT) for y in order]
++    back = []
++
++    for t in xrange(1, n):
++        ch = obs[t]
++        nxt = [0.0] * len(order)
++        step = [0] * len(order)
++        for j in xrange(len(order)):
++            em_p = emit_p[order[j]].get(ch, MIN_FLOAT)
++            best = None
++            best_i = 0
++            best_char = None
++            for i0 in preds[j]:
++                v = cur[i0] + trans[i0][j] + em_p
++                c = order[i0]
++                if best is None or v > best or (v == best and c > best_char):
++                    best = v
++                    best_i = i0
++                    best_char = c
++            nxt[j] = best
++            step[j] = best_i
++        back.append(step)
++        cur = nxt
++
++    # max((prob, y) for y in 'ES'): on a tie 'S' wins because 'S' > 'E'.
++    e_i, s_i = index['E'], index['S']
++    if cur[e_i] > cur[s_i]:
++        prob, state_i = cur[e_i], e_i
++    else:
++        prob, state_i = cur[s_i], s_i
++
++    path = [order[state_i]]
++    for t in xrange(n - 2, -1, -1):
++        state_i = back[t][state_i]
++        path.append(order[state_i])
++    path.reverse()
++
++    return (prob, path)
+ 
+ 
+ def __cut(sentence):

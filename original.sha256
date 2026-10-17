@@ -1,0 +1,5 @@
+# Upstream fxsjy/jieba @ 67fa2e36e72f69d9134b8a1037b83fbb070b9775 (master, v0.42.1)
+# SHA256 of the two files this patch modifies, BEFORE modification.
+# Cross-checked by re-downloading from codeload.github.com on 2026-10-17.
+b47cefcfd0bf683b0c708c1de0328df83be2c35264637c442106e79d739fb7f3  jieba/__init__.py
+2168475bf522c0dae9d0a5e2bcb63c11b8c15931a622035cb8905d1e77e94f84  jieba/finalseg/__init__.py
