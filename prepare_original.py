@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORIG = os.path.join(HERE, "original")
@@ -40,26 +41,41 @@ def main():
         shutil.rmtree(ORIG)
 
     print("Rebuilding original/ by reverse-applying the patch ...")
-    shutil.copytree(OPT, ORIG)
-    shutil.rmtree(os.path.join(ORIG, ".git"), ignore_errors=True)
 
-    cmd = ["git", "-c", "core.autocrlf=false", "apply", "-R", "-p1",
-           "--whitespace=nowarn", PATCH]
-    r = subprocess.run(cmd, cwd=ORIG, capture_output=True, text=True)
-    if r.returncode != 0:
-        print("git apply failed:", r.stderr)
-        return 1
+    # Apply in a temp dir OUTSIDE any git repository, then move it into place.
+    # If we ran `git apply` with cwd=<project>/original, git would notice that
+    # original/ sits inside the project's own repository, resolve -p1 paths
+    # against that repo root, and quietly patch optimized/ instead -- leaving
+    # original/ untouched and reporting success. Keeping the work dir outside
+    # any repo makes the path resolution unambiguous.
+    work = tempfile.mkdtemp(prefix="jieba-recon-")
+    try:
+        stage = os.path.join(work, "tree")
+        shutil.copytree(OPT, stage)
+        shutil.rmtree(os.path.join(stage, ".git"), ignore_errors=True)
 
-    bad = 0
-    for rel, want in EXPECTED.items():
-        got = sha256(os.path.join(ORIG, rel))
-        flag = "OK" if got == want else "MISMATCH"
-        if got != want:
-            bad += 1
-        print(f"  {rel:32s} {flag}")
-    if bad:
-        print("\nRebuild does not match upstream. Aborting.")
-        return 1
+        cmd = ["git", "-c", "core.autocrlf=false", "apply", "-R", "-p1",
+               "--whitespace=nowarn", os.path.abspath(PATCH)]
+        r = subprocess.run(cmd, cwd=stage, capture_output=True, text=True)
+        if r.returncode != 0:
+            print("git apply failed:", r.stderr)
+            return 1
+
+        bad = 0
+        for rel, want in EXPECTED.items():
+            got = sha256(os.path.join(stage, rel))
+            flag = "OK" if got == want else "MISMATCH"
+            if got != want:
+                bad += 1
+            print(f"  {rel:32s} {flag}")
+        if bad:
+            print("\nRebuild does not match upstream. Aborting.")
+            return 1
+
+        shutil.move(stage, ORIG)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
     print("\noriginal/ rebuilt and verified against upstream SHA256.")
     return 0
 

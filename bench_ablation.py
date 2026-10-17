@@ -87,7 +87,14 @@ def run(root, corpus, mode, reps=3):
 
 
 def build_variants():
-    """B = 只改 jieba/__init__.py；C = 只改 finalseg/__init__.py。"""
+    """B = 只改 jieba/__init__.py；C = 只改 finalseg/__init__.py。
+
+    反向补丁必须在任何 git 仓库之外执行：如果 cwd 落在本项目仓库内，
+    git 会把 -p1 路径解析到仓库根，悄悄改到 optimized/ 上，而 original/
+    一动不动却返回成功。
+    """
+    import tempfile
+
     b = os.path.join(HERE, "variant_route_only")
     c = os.path.join(HERE, "variant_viterbi_only")
     for d in (b, c):
@@ -95,23 +102,24 @@ def build_variants():
         shutil.copytree(OPT, d)
         shutil.rmtree(os.path.join(d, ".git"), ignore_errors=True)
 
-    # 反向补丁只作用于单个文件：先重建原版对应文件，再覆盖回变体
-    tmp = os.path.join(HERE, "_tmp_revert")
-    shutil.rmtree(tmp, ignore_errors=True)
-    shutil.copytree(OPT, tmp)
-    shutil.rmtree(os.path.join(tmp, ".git"), ignore_errors=True)
-    r = subprocess.run(["git", "-c", "core.autocrlf=false", "apply", "-R", "-p1",
-                        "--whitespace=nowarn", PATCH], cwd=tmp,
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError("reverse patch failed: " + r.stderr)
+    work = tempfile.mkdtemp(prefix="jieba-ablate-")
+    try:
+        tmp = os.path.join(work, "tree")
+        shutil.copytree(OPT, tmp)
+        shutil.rmtree(os.path.join(tmp, ".git"), ignore_errors=True)
+        r = subprocess.run(["git", "-c", "core.autocrlf=false", "apply", "-R", "-p1",
+                            "--whitespace=nowarn", os.path.abspath(PATCH)], cwd=tmp,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("reverse patch failed: " + r.stderr)
 
-    # B 恢复 finalseg，C 恢复 jieba/__init__.py
-    shutil.copy2(os.path.join(tmp, "jieba", "finalseg", "__init__.py"),
-                 os.path.join(b, "jieba", "finalseg", "__init__.py"))
-    shutil.copy2(os.path.join(tmp, "jieba", "__init__.py"),
-                 os.path.join(c, "jieba", "__init__.py"))
-    shutil.rmtree(tmp, ignore_errors=True)
+        # B 恢复 finalseg，C 恢复 jieba/__init__.py
+        shutil.copy2(os.path.join(tmp, "jieba", "finalseg", "__init__.py"),
+                     os.path.join(b, "jieba", "finalseg", "__init__.py"))
+        shutil.copy2(os.path.join(tmp, "jieba", "__init__.py"),
+                     os.path.join(c, "jieba", "__init__.py"))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return b, c
 
 
