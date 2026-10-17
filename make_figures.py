@@ -132,8 +132,9 @@ ax.barh(y, sp, color=cols, height=0.6, zorder=3)
 ax.errorbar(sp, y, xerr=[lo, hi], fmt="none", ecolor=BROWN, elinewidth=1.4,
             capsize=3.5, zorder=4)
 ax.axvline(1.0, color=RUST, linestyle="--", linewidth=1.3, zorder=2)
-ax.text(1.0, len(names) - 0.35, L(" 1.0x 基准", " 1.0x baseline"), color=RUST,
-        fontsize=9, va="bottom")
+ax.set_ylim(-1.15, len(names) - 0.4)
+ax.text(1.0, -0.95, L("1.0x 基准", "1.0x baseline"), color=RUST,
+        fontsize=8.5, va="center", ha="center", zorder=5)
 for yi, v in zip(y, sp):
     ax.text(v + 0.22, yi, f"{v:.2f}x", va="center", fontsize=11,
             fontweight="bold", color=INK)
@@ -144,9 +145,9 @@ ax.set_xlabel(L("加速比（同进程轮内交错，15 轮，取逐轮比值中
 ax.set_xlim(0, 13.6)
 ax.grid(axis="x", color=GREY, alpha=0.25, zorder=0)
 ax.set_title(
-    L("常规分词 1.43–1.52x；长未登录串 11.6x。灰色对照组未改动，停在 1.0x",
-      "Regular text 1.43-1.52x; long unknown runs 11.6x. Grey control is untouched code"),
-    fontsize=11.5, pad=14, loc="left")
+    L("灰色 = 未改动的对照组，应停在 1.0x；误差棒为逐轮比值的全距",
+      "grey = untouched control, should sit at 1.0x; whiskers span all rounds"),
+    fontsize=10.5, pad=12, loc="left", color=GREY)
 fig.tight_layout()
 fig.savefig(os.path.join(OUT, "fig-speedup.png"), bbox_inches="tight")
 plt.close(fig)
@@ -187,7 +188,8 @@ ax2.set_title(L("加速比随长度单调上升 = O(n²)→O(n)", "speedup rises
 ax2.legend(frameon=False, fontsize=8.5)
 ax2.grid(color=GREY, alpha=0.25)
 
-fig.suptitle(L("Viterbi 改写：为什么必须做 BMES 展开版", "Viterbi rewrite: why the unrolled BMES path matters"),
+fig.suptitle(L("Viterbi：绝对耗时与加速比随观测长度的变化",
+               "Viterbi: absolute cost and speedup vs observation length"),
              fontsize=12, x=0.02, ha="left", color=INK)
 fig.tight_layout(rect=[0, 0, 1, 0.94])
 fig.savefig(os.path.join(OUT, "fig-viterbi.png"), bbox_inches="tight")
@@ -223,9 +225,9 @@ ax.set_yticklabels(["1x", "2x", "5x", "10x", "20x"])
 ax.legend(frameon=False, fontsize=9, ncol=3, loc="upper left")
 ax.grid(axis="y", color=GREY, alpha=0.25, zorder=0)
 ax.set_title(
-    L("归因：常规分词收益来自 _route，长未登录串收益来自 viterbi（对数轴）",
-      "Attribution: regular text -> _route, long unknown runs -> viterbi (log scale)"),
-    fontsize=11, pad=12, loc="left")
+    L("对数轴。对照组三根柱子都贴着 1.0x，说明测量本身没有偏置",
+      "log scale. The control's three bars sit at 1.0x, so the measurement is unbiased"),
+    fontsize=10.5, pad=12, loc="left", color=GREY)
 fig.tight_layout()
 fig.savefig(os.path.join(OUT, "fig-ablation.png"), bbox_inches="tight")
 plt.close(fig)
