@@ -7,11 +7,10 @@ back-pointer。**输出逐字节不变**，常规分词 **1.49x**，长未登录
 ![各模式加速比](docs/fig-speedup.png)
 
 > 上游：https://github.com/fxsjy/jieba
+> 本仓库：https://github.com/linluozi/jieba-opt-lab
 > 基线：`0.42.1` / `master` @ `67fa2e36`
 > 许可证：MIT，版权归 Sun Junyi（`LICENSE` 原样保留，逐字节未改动）
-> 修改内容与声明：见 [NOTICE.md](NOTICE.md)，细节见 [PATCH.md](PATCH.md)
-
----
+> 修改内容与声明：见 [NOTICE.md](NOTICE.md)，细节见 [PATCH.md](PATCH.md)---
 
 ## 目录结构
 
